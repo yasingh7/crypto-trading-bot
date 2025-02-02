@@ -15,6 +15,7 @@ let tradingState = {
   trades: [],
   priceHistory: {},
   performanceHistory: [],
+  dailyPerformance: [], // Günlük performans verisi
   startTime: new Date().toISOString()
 };
 
@@ -39,7 +40,7 @@ const generateTradeParams = () => {
 // Pozisyon aç
 const openPosition = async (prices) => {
   // Maximum 3 açık pozisyon kontrolü
-  if (tradingState.portfolio.positions.length >= 3) return;
+  if (tradingState.portfolio.positions.length >= 5) return;
 
   if (!shouldTrade()) return;
 
@@ -196,13 +197,27 @@ app.post('/api/prices/update', (req, res) => {
   const performance = ((totalValue - tradingState.portfolio.initialBalance) / 
     tradingState.portfolio.initialBalance) * 100;
   
-  tradingState.performanceHistory = [
-    ...tradingState.performanceHistory,
-    {
-      time: new Date().toISOString(),
-      performance
-    }
-  ].slice(-50);
+  // Günün tarihini al (saat olmadan)
+  const today = new Date().toISOString().split('T')[0];
+  
+  // Günlük performans güncelleme
+  const existingDayIndex = tradingState.dailyPerformance.findIndex(
+    day => day.date === today
+  );
+  
+  if (existingDayIndex === -1) {
+    // Yeni gün başlangıcı
+    tradingState.dailyPerformance.push({
+      date: today,
+      performance: performance
+    });
+  } else {
+    // Mevcut günü güncelle
+    tradingState.dailyPerformance[existingDayIndex].performance = performance;
+  }
+  
+  // Son 30 günü tut
+  tradingState.dailyPerformance = tradingState.dailyPerformance.slice(-30);
   
   res.json({ success: true, state: tradingState });
 });
