@@ -18,37 +18,58 @@ let tradingState = {
   startTime: new Date().toISOString()
 };
 
+// Trading stratejisi
+const shouldTrade = () => {
+  // Her kontrol ettiğimizde %80 ihtimalle trade yapacak
+  console.log("Trade kontrolü yapılıyor..."); // Debug log
+  return Math.random() < 0.8;
+};
+
+// Trade parametreleri 
+const generateTradeParams = () => {
+  return {
+    type: Math.random() > 0.5 ? 'LONG' : 'SHORT',
+    leverage: Math.floor(Math.random() * 10) + 1, // 1-10x kaldıraç
+    targetProfit: Math.random() * 20, // 0-20% kar hedefi
+    targetLoss: -Math.random() * 20, // 0-20% zarar kesme
+    portfolioPercentage: 0.2 + Math.random() * 0.3 // Portföyün %20-50'si
+  };
+};
+
+// Pozisyon aç
+const openPosition = async (prices) => {
+  if (!shouldTrade()) return;
+
+  const coins = Object.keys(prices); // Tüm coinler
+  const coin = coins[Math.floor(Math.random() * coins.length)]; // Random coin seç
+  const price = prices[coin];
+  if (!price) return;
+
+  const params = generateTradeParams();
+  const usdAmount = tradingState.portfolio.usd * params.portfolioPercentage;
+  const amount = usdAmount / price;
+
+  const margin = (amount * price) / params.leverage;
+  if (margin > 1 && margin <= tradingState.portfolio.usd) { // Minimum 1 USD
+    tradingState.portfolio.usd -= margin;
+    tradingState.portfolio.positions.push({
+      id: Math.random().toString(36).substring(7),
+      coin,
+      type: params.type,
+      leverage: params.leverage,
+      entryPrice: price,
+      amount,
+      targetProfit: params.targetProfit,
+      targetLoss: params.targetLoss,
+      openTime: new Date().toISOString()
+    });
+    console.log(`Yeni pozisyon açıldı: ${coin} ${params.type} ${params.leverage}x`); // Debug log
+  }
+};
+
 // State'i getir
 app.get('/api/state', (req, res) => {
   res.json(tradingState);
-});
-
-// Yeni pozisyon aç
-app.post('/api/position/open', (req, res) => {
-  const { coin, type, leverage, amount, price, targetProfit, targetLoss } = req.body;
-  
-  const position = {
-    id: Math.random().toString(36).substring(7),
-    coin,
-    type,
-    leverage,
-    entryPrice: price,
-    amount,
-    targetProfit,
-    targetLoss,
-    openTime: new Date().toISOString()
-  };
-
-  // Marjin hesapla
-  const margin = (amount * price) / leverage;
-
-  // Portföyü güncelle
-  if (margin <= tradingState.portfolio.usd) {
-    tradingState.portfolio.usd -= margin;
-    tradingState.portfolio.positions.push(position);
-  }
-
-  res.json({ success: true, state: tradingState });
 });
 
 // Pozisyon kapat
@@ -84,6 +105,7 @@ app.post('/api/position/close', (req, res) => {
     
     tradingState.trades = [trade, ...tradingState.trades].slice(0, 100);
     tradingState.portfolio.positions.splice(positionIndex, 1);
+    console.log(`Pozisyon kapatıldı: ${position.coin} PNL: ${pnl.toFixed(2)}%`); // Debug log
   }
   
   res.json({ success: true, state: tradingState });
@@ -93,6 +115,7 @@ app.post('/api/position/close', (req, res) => {
 app.post('/api/prices/update', (req, res) => {
   const { prices } = req.body;
   
+  // Fiyat geçmişini güncelle
   Object.entries(prices).forEach(([coin, price]) => {
     if (!tradingState.priceHistory[coin]) {
       tradingState.priceHistory[coin] = [];
@@ -106,6 +129,9 @@ app.post('/api/prices/update', (req, res) => {
       }
     ].slice(-50);
   });
+  
+  // Trade yapmayı dene
+  openPosition(prices);
   
   // Açık pozisyonları kontrol et
   tradingState.portfolio.positions.forEach(position => {
@@ -121,7 +147,7 @@ app.post('/api/prices/update', (req, res) => {
     
     if (pnl >= position.targetProfit || pnl <= position.targetLoss) {
       // Pozisyonu kapat
-      fetch(`${req.protocol}://${req.get('host')}/api/position/close`, {
+      const closeResponse = fetch(`${req.protocol}://${req.get('host')}/api/position/close`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -129,9 +155,11 @@ app.post('/api/prices/update', (req, res) => {
           closePrice: currentPrice
         })
       });
+      console.log(`Pozisyon kapatma emri gönderildi: ${position.coin}`); // Debug log
     }
   });
   
+  // Toplam değer ve performans hesapla
   const totalValue = tradingState.portfolio.usd +
     tradingState.portfolio.positions.reduce((acc, pos) => {
       const currentPrice = prices[pos.coin] || 0;
