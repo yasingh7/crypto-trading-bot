@@ -1,9 +1,33 @@
 const express = require('express');
 const cors = require('cors');
+const rateLimit = require('express-rate-limit');
 const app = express();
+
+// Rate limiter ayarları
+const limiter = rateLimit({
+  windowMs: 1000, // 1 saniye
+  max: 5, // Her IP için maksimum 5 istek
+  message: { error: 'Çok fazla istek gönderildi, lütfen birkaç saniye bekleyin.' }
+});
+
+// Global error handler
+app.use((err, req, res, next) => {
+  console.error('Hata yakalandı:', err);
+  res.status(500).json({ error: 'Sunucu hatası oluştu, yeniden deneniyor...' });
+});
+
+// Uncaught exception handler
+process.on('uncaughtException', (err) => {
+  console.error('Beklenmeyen hata:', err);
+});
+
+process.on('unhandledRejection', (err) => {
+  console.error('İşlenmeyen Promise reddi:', err);
+});
 
 app.use(cors());
 app.use(express.json());
+app.use(limiter); // Rate limiting tüm routelara uygulanıyor
 
 // Trading durumu
 let tradingState = {
