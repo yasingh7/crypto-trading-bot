@@ -1,252 +1,319 @@
-const express = require('express');
-const cors = require('cors');
-const rateLimit = require('express-rate-limit');
-const app = express();
+import React, { useState, useEffect } from 'react';
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
+import { ArrowUpCircle, ArrowDownCircle } from 'lucide-react';
 
-// Rate limiter ayarları
-const limiter = rateLimit({
-  windowMs: 1000, // 1 saniye
-  max: 5, // Her IP için maksimum 5 istek
-  message: { error: 'Çok fazla istek gönderildi, lütfen birkaç saniye bekleyin.' }
-});
-
-// Global error handler
-app.use((err, req, res, next) => {
-  console.error('Hata yakalandı:', err);
-  res.status(500).json({ error: 'Sunucu hatası oluştu, yeniden deneniyor...' });
-});
-
-// Uncaught exception handler
-process.on('uncaughtException', (err) => {
-  console.error('Beklenmeyen hata:', err);
-});
-
-process.on('unhandledRejection', (err) => {
-  console.error('İşlenmeyen Promise reddi:', err);
-});
-
-app.use(cors());
-app.use(express.json());
-app.use(limiter); // Rate limiting tüm routelara uygulanıyor
-
-// Trading durumu
-let tradingState = {
-  portfolio: {
-    usd: 10000,
-    initialBalance: 10000,
-    positions: []
-  },
-  trades: [],
-  priceHistory: {},
-  performanceHistory: [],
-  dailyPerformance: [], // Günlük performans verisi
-  startTime: new Date().toISOString()
+// Fiyat formatlama fonksiyonu
+const formatPrice = (price) => {
+  if (typeof price !== 'number') return '-';
+  
+  // 1'den büyük sayılar için 2 ondalık
+  if (price >= 1) {
+    return `${price.toFixed(2)}`;
+  }
+  
+  // 0.0001'den küçük sayılar için bilimsel gösterim
+  if (price < 0.0001) {
+    return `${price.toExponential(4)}`;
+  }
+  
+  // 1'den küçük sayılar için anlamlı basamaklar
+  const decimals = Math.max(8, -Math.floor(Math.log10(price)) + 3);
+  return `${price.toFixed(decimals)}`;
 };
 
-// Trading stratejisi
-const shouldTrade = () => {
-  console.log("Trade kontrolü yapılıyor...");
-  return Math.random() < 0.8;
-};
+const MultiCryptoTrader = () => {
+  const [state, setState] = useState({
+    portfolio: {
+      usd: 10000,
+      initialBalance: 10000,
+      positions: []
+    },
+    currentPrices: {},
+    trades: [],
+    priceHistory: {},
+    performanceHistory: [],
+    startTime: new Date().toISOString()
+  });
 
-// Trade parametreleri 
-const generateTradeParams = () => {
-  return {
-    type: Math.random() > 0.5 ? 'LONG' : 'SHORT',
-    leverage: Math.floor(Math.random() * 10) + 1,
-    targetProfit: (Math.random() * 30),
-    targetLoss: -(Math.random() * 30),
-    // Marjin kasanın %1 ile %5'i arası
-    marginPercentage: 0.01 + (Math.random() * 0.04)
+  // Backend'den state'i al
+  const fetchState = async () => {
+    try {
+      const response = await fetch('https://crypto-trading-bot-9htp.onrender.com/api/state');
+      const data = await response.json();
+      setState(prevState => ({
+        ...data,
+        currentPrices: prevState.currentPrices
+      }));
+    } catch (error) {
+      console.error('State alınamadı:', error);
+    }
   };
-};
 
-// Pozisyon aç
-const openPosition = async (prices) => {
-  // Maximum 3 açık pozisyon kontrolü
-  if (tradingState.portfolio.positions.length >= 3) return;
+  // CoinGecko API'den top 100 coin fiyatlarını al
+  const fetchPrices = async () => {
+    try {
+      const response = await fetch(
+        'https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=100&page=1&sparkline=false'
+      );
+      const data = await response.json();
+      const prices = data.reduce((acc, coin) => {
+        acc[coin.symbol.toUpperCase()] = coin.current_price;
+        return acc;
+      }, {});
 
-  if (!shouldTrade()) return;
-
-  const coins = Object.keys(prices);
-  const coin = coins[Math.floor(Math.random() * coins.length)];
-  const price = prices[coin];
-  if (!price) return;
-
-  const params = generateTradeParams();
-  
-  // Marjin hesaplama (kasanın %1-%5'i arası)
-  const margin = tradingState.portfolio.usd * params.marginPercentage;
-  
-  // Notional size (pozisyon büyüklüğü) hesaplama
-  const notionalSize = margin * params.leverage;
-  
-  // Coin miktarı hesaplama
-  const amount = notionalSize / price;
-
-  if (margin > 1 && margin <= tradingState.portfolio.usd) {
-    tradingState.portfolio.usd -= margin;
-    tradingState.portfolio.positions.push({
-      id: Math.random().toString(36).substring(7),
-      coin,
-      type: params.type,
-      leverage: params.leverage,
-      entryPrice: price,
-      amount,
-      margin,
-      notionalSize,
-      targetProfit: params.targetProfit,
-      targetLoss: params.targetLoss,
-      openTime: new Date().toISOString()
-    });
-    console.log(`Yeni pozisyon açıldı: ${coin} ${params.type} ${params.leverage}x`);
-  }
-};
-
-// Pozisyon kapat
-app.post('/api/position/close', (req, res) => {
-  const { positionId, closePrice } = req.body;
-  
-  const positionIndex = tradingState.portfolio.positions.findIndex(p => p.id === positionId);
-  
-  if (positionIndex !== -1) {
-    const position = tradingState.portfolio.positions[positionIndex];
-    
-    // PNL hesaplama (pozisyon büyüklüğüne göre)
-    let pnlPercentage;
-    if (position.type === 'LONG') {
-      pnlPercentage = ((closePrice - position.entryPrice) / position.entryPrice) * 100 * position.leverage;
-    } else {
-      pnlPercentage = ((position.entryPrice - closePrice) / position.entryPrice) * 100 * position.leverage;
+      setState(prev => ({ ...prev, currentPrices: prices }));
+      return prices;
+    } catch (error) {
+      console.error('Fiyatlar çekilemedi:', error);
+      return null;
     }
-    
-    // Dolar cinsinden PNL
-    const pnlUsd = position.notionalSize * (pnlPercentage / 100);
-    
-    tradingState.portfolio.usd += position.margin + pnlUsd;
-    
-    // Kapanma sebebini belirle
-    let closeReason;
-    if (isOver24Hours) {
-      closeReason = 'TIME';
-    } else if (pnlPercentage >= position.targetProfit) {
-      closeReason = 'TP';
-    } else {
-      closeReason = 'SL';
-    }
+  };
 
-    const trade = {
-      ...position,
-      closePrice,
-      closeTime: new Date().toISOString(),
-      pnlPercentage,
-      pnlUsd,
-      closeReason
-    };
-    
-    tradingState.trades = [trade, ...tradingState.trades].slice(0, 100);
-    tradingState.portfolio.positions.splice(positionIndex, 1);
-    console.log(`Pozisyon kapatıldı: ${position.coin} PNL: ${pnlPercentage.toFixed(2)}% ($${pnlUsd.toFixed(2)})`);
-  }
-  
-  res.json({ success: true, state: tradingState });
-});
+  // Fiyat güncellemesi ve pozisyon kontrolü
+  useEffect(() => {
+    const updatePrices = async () => {
+      const prices = await fetchPrices();
+      if (prices) {
+        try {
+          const response = await fetch('https://crypto-trading-bot-9htp.onrender.com/api/prices/update', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ prices }),
+          });
 
-// Fiyatları güncelle ve pozisyonları kontrol et
-app.post('/api/prices/update', (req, res) => {
-  const { prices } = req.body;
-  
-  Object.entries(prices).forEach(([coin, price]) => {
-    if (!tradingState.priceHistory[coin]) {
-      tradingState.priceHistory[coin] = [];
-    }
-    
-    tradingState.priceHistory[coin] = [
-      ...tradingState.priceHistory[coin],
-      { time: new Date().toISOString(), price }
-    ].slice(-50);
-  });
-  
-  // Trade yapmayı dene
-  openPosition(prices);
-  
-  // Açık pozisyonları kontrol et
-  tradingState.portfolio.positions.forEach(position => {
-    const currentPrice = prices[position.coin];
-    if (!currentPrice) return;
-    
-    let pnlPercentage;
-    if (position.type === 'LONG') {
-      pnlPercentage = ((currentPrice - position.entryPrice) / position.entryPrice) * 100 * position.leverage;
-    } else {
-      pnlPercentage = ((position.entryPrice - currentPrice) / position.entryPrice) * 100 * position.leverage;
-    }
-    
-    const pnlUsd = position.notionalSize * (pnlPercentage / 100);
-    
-    // 24 saat geçmiş mi kontrol et
-    const positionAge = new Date() - new Date(position.openTime);
-    const isOver24Hours = positionAge >= 24 * 60 * 60 * 1000; // 24 saat milisaniye cinsinden
-    
-    if (pnlPercentage >= position.targetProfit || 
-        pnlPercentage <= position.targetLoss || 
-        isOver24Hours) {
-      const closeResponse = fetch(`${req.protocol}://${req.get('host')}/api/position/close`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          positionId: position.id,
-          closePrice: currentPrice
-        })
-      });
-      console.log(`Pozisyon kapatma emri gönderildi: ${position.coin}`);
-    }
-  });
-  
-  // Toplam portfolio değeri hesaplama
-  const totalValue = tradingState.portfolio.usd +
-    tradingState.portfolio.positions.reduce((acc, pos) => {
-      const currentPrice = prices[pos.coin] || 0;
-      let pnlPercentage;
-      if (pos.type === 'LONG') {
-        pnlPercentage = ((currentPrice - pos.entryPrice) / pos.entryPrice) * 100 * pos.leverage;
-      } else {
-        pnlPercentage = ((pos.entryPrice - currentPrice) / pos.entryPrice) * 100 * pos.leverage;
+          const data = await response.json();
+          if (data.success) {
+            setState(prev => ({
+              ...data.state,
+              currentPrices: prev.currentPrices
+            }));
+          }
+        } catch (error) {
+          console.error('Fiyatlar güncellenemedi:', error);
+        }
       }
+    };
+
+    fetchState();
+    updatePrices();
+    const interval = setInterval(updatePrices, 15000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const totalValue = state.portfolio.usd +
+    state.portfolio.positions.reduce((acc, pos) => {
+      const currentPrice = state.currentPrices[pos.coin] || 0;
+      let pnlPercentage = pos.type === 'LONG'
+        ? ((currentPrice - pos.entryPrice) / pos.entryPrice) * 100 * pos.leverage
+        : ((pos.entryPrice - currentPrice) / pos.entryPrice) * 100 * pos.leverage;
       
       const pnlUsd = pos.notionalSize * (pnlPercentage / 100);
       return acc + pos.margin + pnlUsd;
     }, 0);
-  
-  const performance = ((totalValue - tradingState.portfolio.initialBalance) / 
-    tradingState.portfolio.initialBalance) * 100;
-  
-  // Günün tarihini al (saat olmadan)
-  const today = new Date().toISOString().split('T')[0];
-  
-  // Günlük performans güncelleme
-  const existingDayIndex = tradingState.dailyPerformance.findIndex(
-    day => day.date === today
-  );
-  
-  if (existingDayIndex === -1) {
-    // Yeni gün başlangıcı
-    tradingState.dailyPerformance.push({
-      date: today,
-      performance: performance
-    });
-  } else {
-    // Mevcut günü güncelle
-    tradingState.dailyPerformance[existingDayIndex].performance = performance;
-  }
-  
-  // Son 30 günü tut
-  tradingState.dailyPerformance = tradingState.dailyPerformance.slice(-30);
-  
-  res.json({ success: true, state: tradingState });
-});
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-});
+  const performance = ((totalValue - state.portfolio.initialBalance) /
+    state.portfolio.initialBalance) * 100;
+
+  return (
+    <div className="p-4 max-w-7xl mx-auto">
+      <div className="bg-white rounded-lg shadow-lg p-6">
+        <h1 className="text-2xl font-bold mb-6">Kripto Trading Bot</h1>
+
+        {/* Portfolio Özeti */}
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+          <div className="bg-gray-50 p-4 rounded-lg">
+            <h3 className="text-lg font-semibold">Portfolio</h3>
+            <p>USD: ${formatPrice(state.portfolio.usd)}</p>
+            <p>Toplam: ${formatPrice(totalValue)}</p>
+            <p className={performance >= 0 ? 'text-green-600' : 'text-red-600'}>
+              {performance >= 0 ? '+' : ''}{performance.toFixed(2)}%
+            </p>
+          </div>
+
+          <div className="bg-gray-50 p-4 rounded-lg">
+            <h3 className="text-lg font-semibold">Açık Pozisyonlar</h3>
+            <p>{state.portfolio.positions.length} / 3</p>
+          </div>
+
+          <div className="bg-gray-50 p-4 rounded-lg">
+            <h3 className="text-lg font-semibold">Toplam İşlem</h3>
+            <p>{state.trades.length}</p>
+          </div>
+
+          <div className="bg-gray-50 p-4 rounded-lg">
+            <h3 className="text-lg font-semibold">Başlangıç</h3>
+            <p>{new Date(state.startTime).toLocaleString()}</p>
+          </div>
+        </div>
+
+        {/* Performans Grafiği */}
+        <div className="mb-8">
+          <h3 className="text-lg font-semibold mb-4">Günlük Performans Grafiği</h3>
+          <div className="h-64 bg-white rounded-lg">
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={state.dailyPerformance}>
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis 
+                  dataKey="date"
+                  tickFormatter={(date) => {
+                    const d = new Date(date);
+                    return `${d.getDate()}/${d.getMonth() + 1}`;
+                  }}
+                />
+                <YAxis />
+                <Tooltip 
+                  labelFormatter={(date) => {
+                    const d = new Date(date);
+                    return `${d.getDate()}/${d.getMonth() + 1}/${d.getFullYear()}`;
+                  }}
+                  formatter={(value) => [`${value.toFixed(2)}%`, 'Performans']}
+                />
+                <Legend />
+                <Line 
+                  type="monotone" 
+                  dataKey="performance" 
+                  stroke="#8884d8" 
+                  name="Günlük Kâr/Zarar %" 
+                  dot={{ r: 4 }}
+                  activeDot={{ r: 6 }}
+                />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+
+        {/* Açık Pozisyonlar Tablosu */}
+        <div className="mb-8">
+          <h3 className="text-lg font-semibold mb-4">Açık Pozisyonlar</h3>
+          <div className="overflow-x-auto">
+            <table className="min-w-full bg-white rounded-lg">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="px-4 py-3 text-left">Coin</th>
+                  <th className="px-4 py-3 text-left">Yön</th>
+                  <th className="px-4 py-3 text-left">Kaldıraç</th>
+                  <th className="px-4 py-3 text-left">Marjin</th>
+                  <th className="px-4 py-3 text-left">Poz. Büyüklüğü</th>
+                  <th className="px-4 py-3 text-left">Giriş</th>
+                  <th className="px-4 py-3 text-left">Güncel</th>
+                  <th className="px-4 py-3 text-left">PNL %</th>
+                  <th className="px-4 py-3 text-left">PNL $</th>
+                  <th className="px-4 py-3 text-left">TP/SL</th>
+                </tr>
+              </thead>
+              <tbody>
+                {state.portfolio.positions.map((position) => {
+                  const currentPrice = state.currentPrices[position.coin] || 0;
+                  let pnlPercentage = position.type === 'LONG'
+                    ? ((currentPrice - position.entryPrice) / position.entryPrice) * 100 * position.leverage
+                    : ((position.entryPrice - currentPrice) / position.entryPrice) * 100 * position.leverage;
+                  
+                  const pnlUsd = position.notionalSize * (pnlPercentage / 100);
+
+                  return (
+                    <tr key={position.id} className="border-t">
+                      <td className="px-4 py-3">{position.coin}</td>
+                      <td className={`px-4 py-3 ${position.type === 'LONG' ? 'text-green-600' : 'text-red-600'}`}>
+                        {position.type}
+                      </td>
+                      <td className="px-4 py-3">{position.leverage}x</td>
+                      <td className="px-4 py-3">{formatPrice(position.margin)}</td>
+                      <td className="px-4 py-3">{formatPrice(position.notionalSize)}</td>
+                      <td className="px-4 py-3">{formatPrice(position.entryPrice)}</td>
+                      <td className="px-4 py-3">{formatPrice(currentPrice)}</td>
+                      <td className={`px-4 py-3 ${pnlPercentage >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                        {pnlPercentage >= 0 ? '+' : ''}{pnlPercentage.toFixed(2)}%
+                      </td>
+                      <td className={`px-4 py-3 ${pnlUsd >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                        {pnlUsd >= 0 ? '+' : ''}${pnlUsd.toFixed(2)}
+                      </td>
+                      <td className="px-4 py-3">
+                        +{position.targetProfit.toFixed(1)}% / {position.targetLoss.toFixed(1)}%
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        {/* Kapalı Pozisyonlar Tablosu */}
+        <div>
+          <h3 className="text-lg font-semibold mb-4">Son İşlemler</h3>
+          <div className="overflow-x-auto">
+            <table className="min-w-full bg-white rounded-lg">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="px-4 py-3 text-left">Coin</th>
+                  <th className="px-4 py-3 text-left">Yön</th>
+                  <th className="px-4 py-3 text-left">Kaldıraç</th>
+                  <th className="px-4 py-3 text-left">Marjin</th>
+                  <th className="px-4 py-3 text-left">Poz. Büyüklüğü</th>
+                  <th className="px-4 py-3 text-left">Giriş</th>
+                  <th className="px-4 py-3 text-left">Çıkış</th>
+                  <th className="px-4 py-3 text-left">PNL %</th>
+                  <th className="px-4 py-3 text-left">PNL $</th>
+                  <th className="px-4 py-3 text-left">Hedef TP/SL</th>
+                  <th className="px-4 py-3 text-left">Kapanış Nedeni</th>
+                  <th className="px-4 py-3 text-left">Kapanış</th>
+                </tr>
+              </thead>
+              <tbody>
+                {state.trades.slice(0, 10).map((trade, index) => {
+                  const getCloseReasonDisplay = (reason) => {
+                    switch(reason) {
+                      case 'TP':
+                        return { text: 'Take Profit', color: 'text-green-600' };
+                      case 'SL':
+                        return { text: 'Stop Loss', color: 'text-red-600' };
+                      case 'TIME':
+                        return { text: '24s Limit', color: 'text-gray-600' };
+                      default:
+                        return { text: reason, color: 'text-gray-600' };
+                    }
+                  };
+                  
+                  const closeReasonStyle = getCloseReasonDisplay(trade.closeReason);
+                  
+                  return (
+                    <tr key={index} className="border-t">
+                      <td className="px-4 py-3">{trade.coin}</td>
+                      <td className={`px-4 py-3 ${trade.type === 'LONG' ? 'text-green-600' : 'text-red-600'}`}>
+                        {trade.type}
+                      </td>
+                      <td className="px-4 py-3">{trade.leverage}x</td>
+                      <td className="px-4 py-3">{formatPrice(trade.margin)}</td>
+                      <td className="px-4 py-3">{formatPrice(trade.notionalSize)}</td>
+                      <td className="px-4 py-3">{formatPrice(trade.entryPrice)}</td>
+                      <td className="px-4 py-3">{formatPrice(trade.closePrice)}</td>
+                      <td className={`px-4 py-3 ${trade.pnlPercentage >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                        {trade.pnlPercentage >= 0 ? '+' : ''}{trade.pnlPercentage.toFixed(2)}%
+                      </td>
+                      <td className={`px-4 py-3 ${trade.pnlUsd >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                        {trade.pnlUsd >= 0 ? '+' : ''}${trade.pnlUsd.toFixed(2)}
+                      </td>
+                      <td className="px-4 py-3">
+                        +{trade.targetProfit.toFixed(1)}% / {trade.targetLoss.toFixed(1)}%
+                      </td>
+                      <td className={`px-4 py-3 ${closeReasonStyle.color}`}>
+                        {closeReasonStyle.text}
+                      </td>
+                      <td className="px-4 py-3">
+                        {new Date(trade.closeTime).toLocaleString()}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default MultiCryptoTrader;
