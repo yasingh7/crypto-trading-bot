@@ -100,12 +100,23 @@ app.post('/api/position/close', (req, res) => {
     
     tradingState.portfolio.usd += position.margin + pnlUsd;
     
+    // Kapanma sebebini belirle
+    let closeReason;
+    if (isOver24Hours) {
+      closeReason = 'TIME';
+    } else if (pnlPercentage >= position.targetProfit) {
+      closeReason = 'TP';
+    } else {
+      closeReason = 'SL';
+    }
+
     const trade = {
       ...position,
       closePrice,
       closeTime: new Date().toISOString(),
       pnlPercentage,
-      pnlUsd
+      pnlUsd,
+      closeReason
     };
     
     tradingState.trades = [trade, ...tradingState.trades].slice(0, 100);
