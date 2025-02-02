@@ -64,7 +64,7 @@ const generateTradeParams = () => {
 // Pozisyon aç
 const openPosition = async (prices) => {
   // Maximum 3 açık pozisyon kontrolü
-  if (tradingState.portfolio.positions.length >= 4) return;
+  if (tradingState.portfolio.positions.length >= 3) return;
 
   if (!shouldTrade()) return;
 
