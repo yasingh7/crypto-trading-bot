@@ -27,18 +27,19 @@ const shouldTrade = () => {
 // Trade parametreleri 
 const generateTradeParams = () => {
   return {
-    type: Math.random() > 0.5 ? 'LONG' : 'SHORT', // %50 olasılık
-    leverage: Math.floor(Math.random() * 10) + 1, // 1-10x kaldıraç
-    targetProfit: (Math.random() * 30), // 0-30% kar hedefi
-    targetLoss: -(Math.random() * 30), // 0-30% zarar kesme
-    portfolioPercentage: Math.random() * 0.1 // Portföyün %0-10'u
+    type: Math.random() > 0.5 ? 'LONG' : 'SHORT',
+    leverage: Math.floor(Math.random() * 10) + 1,
+    targetProfit: (Math.random() * 30),
+    targetLoss: -(Math.random() * 30),
+    // Marjin kasanın %1 ile %5'i arası
+    marginPercentage: 0.01 + (Math.random() * 0.04)
   };
 };
 
 // Pozisyon aç
 const openPosition = async (prices) => {
-  // Maximum 2 açık pozisyon kontrolü
-  if (tradingState.portfolio.positions.length >= 2) return;
+  // Maximum 3 açık pozisyon kontrolü
+  if (tradingState.portfolio.positions.length >= 3) return;
 
   if (!shouldTrade()) return;
 
@@ -48,10 +49,16 @@ const openPosition = async (prices) => {
   if (!price) return;
 
   const params = generateTradeParams();
-  const usdAmount = tradingState.portfolio.usd * params.portfolioPercentage;
-  const amount = usdAmount / price;
+  
+  // Marjin hesaplama (kasanın %1-%5'i arası)
+  const margin = tradingState.portfolio.usd * params.marginPercentage;
+  
+  // Notional size (pozisyon büyüklüğü) hesaplama
+  const notionalSize = margin * params.leverage;
+  
+  // Coin miktarı hesaplama
+  const amount = notionalSize / price;
 
-  const margin = (amount * price) / params.leverage;
   if (margin > 1 && margin <= tradingState.portfolio.usd) {
     tradingState.portfolio.usd -= margin;
     tradingState.portfolio.positions.push({
@@ -61,6 +68,8 @@ const openPosition = async (prices) => {
       leverage: params.leverage,
       entryPrice: price,
       amount,
+      margin,
+      notionalSize,
       targetProfit: params.targetProfit,
       targetLoss: params.targetLoss,
       openTime: new Date().toISOString()
@@ -68,11 +77,6 @@ const openPosition = async (prices) => {
     console.log(`Yeni pozisyon açıldı: ${coin} ${params.type} ${params.leverage}x`);
   }
 };
-
-// State'i getir
-app.get('/api/state', (req, res) => {
-  res.json(tradingState);
-});
 
 // Pozisyon kapat
 app.post('/api/position/close', (req, res) => {
@@ -83,29 +87,30 @@ app.post('/api/position/close', (req, res) => {
   if (positionIndex !== -1) {
     const position = tradingState.portfolio.positions[positionIndex];
     
-    let pnl;
+    // PNL hesaplama (pozisyon büyüklüğüne göre)
+    let pnlPercentage;
     if (position.type === 'LONG') {
-      pnl = (closePrice - position.entryPrice) / position.entryPrice * 100 * position.leverage;
+      pnlPercentage = ((closePrice - position.entryPrice) / position.entryPrice) * 100 * position.leverage;
     } else {
-      pnl = (position.entryPrice - closePrice) / position.entryPrice * 100 * position.leverage;
+      pnlPercentage = ((position.entryPrice - closePrice) / position.entryPrice) * 100 * position.leverage;
     }
     
-    const margin = (position.amount * position.entryPrice) / position.leverage;
-    const profit = margin * (pnl / 100);
+    // Dolar cinsinden PNL
+    const pnlUsd = position.notionalSize * (pnlPercentage / 100);
     
-    tradingState.portfolio.usd += margin + profit;
+    tradingState.portfolio.usd += position.margin + pnlUsd;
     
     const trade = {
       ...position,
       closePrice,
       closeTime: new Date().toISOString(),
-      pnl,
-      profit
+      pnlPercentage,
+      pnlUsd
     };
     
     tradingState.trades = [trade, ...tradingState.trades].slice(0, 100);
     tradingState.portfolio.positions.splice(positionIndex, 1);
-    console.log(`Pozisyon kapatıldı: ${position.coin} PNL: ${pnl.toFixed(2)}%`);
+    console.log(`Pozisyon kapatıldı: ${position.coin} PNL: ${pnlPercentage.toFixed(2)}% ($${pnlUsd.toFixed(2)})`);
   }
   
   res.json({ success: true, state: tradingState });
@@ -122,10 +127,7 @@ app.post('/api/prices/update', (req, res) => {
     
     tradingState.priceHistory[coin] = [
       ...tradingState.priceHistory[coin],
-      {
-        time: new Date().toISOString(),
-        price
-      }
+      { time: new Date().toISOString(), price }
     ].slice(-50);
   });
   
@@ -137,15 +139,16 @@ app.post('/api/prices/update', (req, res) => {
     const currentPrice = prices[position.coin];
     if (!currentPrice) return;
     
-    let pnl;
+    let pnlPercentage;
     if (position.type === 'LONG') {
-      pnl = (currentPrice - position.entryPrice) / position.entryPrice * 100 * position.leverage;
+      pnlPercentage = ((currentPrice - position.entryPrice) / position.entryPrice) * 100 * position.leverage;
     } else {
-      pnl = (position.entryPrice - currentPrice) / position.entryPrice * 100 * position.leverage;
+      pnlPercentage = ((position.entryPrice - currentPrice) / position.entryPrice) * 100 * position.leverage;
     }
     
-    // PNL hedefleri kaldıraç dahil olarak kontrol ediliyor
-    if (pnl >= position.targetProfit || pnl <= position.targetLoss) {
+    const pnlUsd = position.notionalSize * (pnlPercentage / 100);
+    
+    if (pnlPercentage >= position.targetProfit || pnlPercentage <= position.targetLoss) {
       const closeResponse = fetch(`${req.protocol}://${req.get('host')}/api/position/close`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -158,17 +161,19 @@ app.post('/api/prices/update', (req, res) => {
     }
   });
   
+  // Toplam portfolio değeri hesaplama
   const totalValue = tradingState.portfolio.usd +
     tradingState.portfolio.positions.reduce((acc, pos) => {
       const currentPrice = prices[pos.coin] || 0;
-      let pnl;
+      let pnlPercentage;
       if (pos.type === 'LONG') {
-        pnl = (currentPrice - pos.entryPrice) / pos.entryPrice * 100 * pos.leverage;
+        pnlPercentage = ((currentPrice - pos.entryPrice) / pos.entryPrice) * 100 * pos.leverage;
       } else {
-        pnl = (pos.entryPrice - currentPrice) / pos.entryPrice * 100 * pos.leverage;
+        pnlPercentage = ((pos.entryPrice - currentPrice) / pos.entryPrice) * 100 * pos.leverage;
       }
-      const margin = (pos.amount * pos.entryPrice) / pos.leverage;
-      return acc + margin * (1 + pnl / 100);
+      
+      const pnlUsd = pos.notionalSize * (pnlPercentage / 100);
+      return acc + pos.margin + pnlUsd;
     }, 0);
   
   const performance = ((totalValue - tradingState.portfolio.initialBalance) / 
