@@ -148,7 +148,13 @@ app.post('/api/prices/update', (req, res) => {
     
     const pnlUsd = position.notionalSize * (pnlPercentage / 100);
     
-    if (pnlPercentage >= position.targetProfit || pnlPercentage <= position.targetLoss) {
+    // 24 saat geçmiş mi kontrol et
+    const positionAge = new Date() - new Date(position.openTime);
+    const isOver24Hours = positionAge >= 24 * 60 * 60 * 1000; // 24 saat milisaniye cinsinden
+    
+    if (pnlPercentage >= position.targetProfit || 
+        pnlPercentage <= position.targetLoss || 
+        isOver24Hours) {
       const closeResponse = fetch(`${req.protocol}://${req.get('host')}/api/position/close`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
