@@ -3,7 +3,7 @@ const cors = require('cors');
 const rateLimit = require('express-rate-limit');
 const app = express();
 
-// Rate limiter ayarları
+// Rate limiter ayarlarıs
 const limiter = rateLimit({
   windowMs: 1000,
   max: 5,
